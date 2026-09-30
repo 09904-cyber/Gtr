@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>AR Balloon Pop Game with Sound & Effects</title>
+  
+  <!-- A-Frame Library -->
+  <script src="https://aframe.io/releases/1.2.0/aframe.min.js"></script>
+  <!-- AR.js for A-Frame -->
+  <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
+  
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      user-select: none;
+    }
+
+    /* UI Overlay บนหน้าจอ */
+    #ui-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 10;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-sizing: border-box;
+      padding: 20px;
+    }
+
+    .hud {
+      display: flex;
+      justify-content: space-between;
+      color: white;
+      font-size: 24px;
+      font-weight: bold;
+      text-shadow: 2px 2px 6px rgba(0,0,0,0.8);
+    }
+
+    .hud-box {
+      background: rgba(0, 0, 0, 0.6);
+      padding: 10px 22px;
+      border-radius: 15px;
+      border: 2px solid #fff;
+      backdrop-filter: blur(4px);
+    }
+
+    /* หน้าจอ Game Over / Victory */
+    #game-over-screen {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.88);
+      color: white;
+      padding: 30px;
+      border-radius: 20px;
+      text-align: center;
+      pointer-events: auto;
+      display: none;
+      box-shadow: 0 0 25px rgba(255, 255, 255, 0.3);
+      min-width: 260px;
+    }
+
+    #game-over-screen h1 {
+      margin-top: 0;
+      color: #ff4757;
+      font-size: 32px;
+    }
+
+    .btn-restart {
+      background: linear-gradient(135deg, #2ed573, #26af5f);
+      border: none;
+      color: white;
+      padding: 12px 30px;
+      font-size: 18px;
+      font-weight: bold;
+      border-radius: 25px;
+      cursor: pointer;
+      margin-top: 15px;
+      box-shadow: 0 4px 10px rgba(46, 213, 115, 0.4);
+      transition: all 0.2s;
+    }
+
+    .btn-restart:active {
+      transform: scale(0.95);
+    }
+
+    /* คำแนะนำในการส่อง Marker */
+    #instruction {
+      position: absolute;
+      bottom: 25px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.75);
+      color: #ffa500;
+      padding: 10px 20px;
+      border-radius: 20px;
+      font-size: 15px;
+      text-align: center;
+      border: 1px solid rgba(255, 165, 0, 0.5);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- UI HUD Display -->
+  <div id="ui-container">
+    <div class="hud">
+      <div class="hud-box">🎈 Score: <span id="score">0</span></div>
+      <div class="hud-box">⏱️ Time: <span id="timer">30</span>s</div>
+    </div>
+    
+    <div id="instruction">📷 ส่องกล้องไปที่มาร์กเกอร์ HIRO เพื่อเริ่มเล่น!</div>
+
+    <div id="game-over-screen">
+      <h1 id="game-title">หมดเวลา! 🎉</h1>
+      <p style="font-size: 20px;">คะแนนรวมของคุณ: <b id="final-score" style="color: #2ed573;">0</b></p>
+      <button class="btn-restart" onclick="restartGame()">เล่นอีกครั้ง</button>
+    </div>
+  </div>
+
+  <!-- AR Scene -->
+  <a-scene 
+    embedded 
+    arjs="sourceType: webcam; debugUIEnabled: false;"
+    cursor="rayOrigin: mouse"
+    raycaster="objects: .clickable">
+
+    <!-- AR Marker (Standard Hiro) -->
+    <a-marker preset="hiro" id="marker">
+      <!-- ฐานปล่อยลูกโป่งมีแสงเรืองๆ -->
+      <a-cylinder position="0 0 0" radius="0.8" height="0.04" color="#2c3e50" opacity="0.85"></a-cylinder>
+
+      <!-- คอนเทนเนอร์ใส่ลูกโป่งและเอฟเฟค -->
+      <a-entity id="balloon-container"></a-entity>
+    </a-marker>
+
+    <!-- กล้องถ่ายภาพ -->
+    <a-entity camera></a-entity>
+
+  </a-scene>
+
+  <script>
+    let score = 0;
+    let timeLeft = 30;
+    let gameInterval;
+    let spawnInterval;
+    let isGameRunning = false;
+
+    const scoreEl = document.getElementById('score');
+    const timerEl = document.getElementById('timer');
+    const gameOverScreen = document.getElementById('game-over-screen');
+    const finalScoreEl = document.getElementById('final-score');
+    const container = document.getElementById('balloon-container');
+    const marker = document.getElementById('marker');
+
+    // สร้าง Web Audio API Synthesizer สำหรับเสียงลูกโป่งแตก (ไม่ต้องพึ่งไฟล์ภายนอก)
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    function playPopSound() {
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+
+      // สร้าง Pop Sound แบบสังเคราะห์ (Synthesized Pop)
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+
+      osc.type = 'sine';
+      // ปรับ pitch ให้รูดลงเร็วๆ เลียนแบบเสียงลูกโป่งแตก
+      osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(120, audioCtx.currentTime + 0.08);
+
+      gain.gain.setValueAtTime(1.0, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.08);
+
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.08);
+    }
+
+    // ตรวจจับเมื่อเจอ Marker
+    marker.addEventListener('markerFound', () => {
+      if (!isGameRunning) {
+        startGame();
+      }
+    });
+
+    function startGame() {
+      score = 0;
+      timeLeft = 30;
+      isGameRunning = true;
+      scoreEl.textContent = score;
+      timerEl.textContent = timeLeft;
+      gameOverScreen.style.display = 'none';
+
+      container.innerHTML = '';
+
+      gameInterval = setInterval(() => {
+        timeLeft--;
+        timerEl.textContent = timeLeft;
+        if (timeLeft <= 0) {
+          endGame();
+        }
+      }, 1000);
+
+      spawnInterval = setInterval(spawnBalloon, 750);
+    }
+
+    function spawnBalloon() {
+      if (!isGameRunning) return;
+
+      const balloonGroup = document.createElement('a-entity');
+      
+      // สุ่มตำแหน่งต้นทาง
+      const startX = (Math.random() - 0.5) * 1.6;
+      const startZ = (Math.random() - 0.5) * 1.6;
+      
+      // สุ่มมุมหมุนเอียง (Tilt / Rotation) ตามทิศทางสุ่ม ให้ดูมีน้ำหนักและเป็นธรรมชาติ
+      const rotX = (Math.random() - 0.5) * 40; // เอียงหน้า-หลัง
+      const rotZ = (Math.random() - 0.5) * 40; // เอียงซ้าย-ขวา
+      const rotY = Math.random() * 360;        // หันหน้าสุ่มทิศ
+
+      // สุ่มสีลูกโป่งสดใส
+      const colors = ['#ff4757', '#2ed573', '#1e90ff', '#ffa500', '#9b59b6', '#ff6b81'];
+      const randomColor = colors[Math.floor(Math.random() * colors.length)];
+
+      balloonGroup.setAttribute('position', `${startX} 0 ${startZ}`);
+      balloonGroup.setAttribute('rotation', `${rotX} ${rotY} ${rotZ}`);
+      balloonGroup.setAttribute('class', 'clickable');
+
+      // สร้างตัวลูกโป่ง + เชือก + จุดสะท้อนแสง
+      balloonGroup.innerHTML = `
+        <!-- ตัวลูกโป่งทรงรี -->
+        <a-sphere radius="0.14" scale="1 1.25 1" color="${randomColor}" roughness="0.25" metalness="0.1">
+          <!-- แสงสะท้อนทรงกลมเล็กๆ บนลูกโป่ง -->
+          <a-sphere radius="0.03" position="0.05 0.06 0.1" color="#ffffff" opacity="0.6"></a-sphere>
+        </a-sphere>
+
+        <!-- จุกและเชือกลูกโป่ง -->
+        <a-cone radius-bottom="0.03" radius-top="0" height="0.04" position="0 -0.17 0" color="${randomColor}"></a-cone>
+        <a-cylinder radius="0.003" height="0.3" position="0 -0.32 0" color="${randomColor}" opacity="0.7"></a-cylinder>
+      `;
+
+      // อนิเมชันลอยขึ้น + ส่ายหมุนเบาๆ (Wobble Effect)
+      const endX = startX + (Math.random() - 0.5) * 0.4;
+      balloonGroup.setAttribute('animation__move', {
+        property: 'position',
+        to: `${endX} 2.6 ${startZ}`,
+        dur: Math.random() * 2000 + 3200,
+        easing: 'linear'
+      });
+
+      balloonGroup.setAttribute('animation__sway', {
+        property: 'rotation',
+        to: `${rotX + 15} ${rotY + 180} ${rotZ - 15}`,
+        dur: 2000,
+        dir: 'alternate',
+        loop: true,
+        easing: 'easeInOutSine'
+      });
+
+      // คลิกยิง/แตะลูกโป่ง
+      balloonGroup.addEventListener('click', function () {
+        if (!isGameRunning) return;
+
+        // เล่นเสียงแตก
+        playPopSound();
+
+        // เพิ่มคะแนน
+        score += 10;
+        scoreEl.textContent = score;
+
+        // ดึงตำแหน่งปัจจุบันมาสร้าง Particle Burst (เศษแตกกระจาย)
+        const currentPos = balloonGroup.getAttribute('position');
+        createPopParticles(currentPos, randomColor);
+
+        // ลบลูกโป่งออกทันที
+        if (balloonGroup.parentNode) {
+          balloonGroup.parentNode.removeChild(balloonGroup);
+        }
+      });
+
+      // ลบลูกโป่งอัตโนมัติเมื่อลอยหายไป
+      setTimeout(() => {
+        if (balloonGroup.parentNode && isGameRunning) {
+          balloonGroup.parentNode.removeChild(balloonGroup);
+        }
+      }, 5500);
+
+      container.appendChild(balloonGroup);
+    }
+
+    // ฟังก์ชันสร้าง Particle Effect กระจายตัวตอนลูกโป่งแตก
+    function createPopParticles(pos, color) {
+      const particleCount = 10;
+
+      for (let i = 0; i < particleCount; i++) {
+        const p = document.createElement('a-sphere');
+        p.setAttribute('radius', '0.025');
+        p.setAttribute('color', color);
+        p.setAttribute('position', `${pos.x} ${pos.y} ${pos.z}`);
+
+        // สุ่มทิศทางกระจายตัวออกรอบทิศทาง
+        const targetX = pos.x + (Math.random() - 0.5) * 0.7;
+        const targetY = pos.y + (Math.random() - 0.5) * 0.7;
+        const targetZ = pos.z + (Math.random() - 0.5) * 0.7;
+
+        p.setAttribute('animation__fly', {
+          property: 'position',
+          to: `${targetX} ${targetY} ${targetZ}`,
+          dur: 350,
+          easing: 'easeOutQuad'
+        });
+
+        p.setAttribute('animation__fade', {
+          property: 'scale',
+          to: '0 0 0',
+          dur: 350,
+          easing: 'easeInQuad'
+        });
+
+        container.appendChild(p);
+
+        // เคลียร์เศษเอฟเฟคออกจาก Scene
+        setTimeout(() => {
+          if (p.parentNode) {
+            p.parentNode.removeChild(p);
+          }
+        }, 400);
+      }
+    }
+
+    function endGame() {
+      isGameRunning = false;
+      clearInterval(gameInterval);
+      clearInterval(spawnInterval);
+      
+      finalScoreEl.textContent = score;
+      gameOverScreen.style.display = 'block';
+    }
+
+    function restartGame() {
+      startGame();
+    }
+  </script>
+</body>
+</html>
